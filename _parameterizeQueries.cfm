@@ -15,7 +15,7 @@ Use:
 	Place _ParameterizeQueries.cfm in a document directory and load.
 	Template will start from its current directory and proceed to read all .cfm documents in that 
 	directory, find and report all <CFQUERY>s found, and, if it looks like there's a spot that
-	<CFQUERYPARAM> can be used, give you the option to parameterize the query.
+	<cfqueryparam> can be used, give you the option to parameterize the query.
 
 	If "beRecursive" is set to True (just after these comments), it will recursively
 	search all subdirectories, too.
@@ -39,6 +39,113 @@ Legal:
 	or fitness for any particular purpose.  Use at your own exclusive risk.
 	
 --->
+
+<cfscript>
+	function getTypeStr(theParam) {
+		// Put you heuristic here
+		if (theParam contains "now()" or theParam contains "date") {
+			return "CF_SQL_TIMESTAMP";
+		}
+		return "";
+	}
+	
+	function buildNewParam(theParam) {
+		return buildCfqueryparam(theParam, buildTypeAttr(theParam));
+	}
+	
+	function buildTypeAttr(theParam) {
+		var typeStr = getTypeStr(theParam);
+		
+		var typeAttr = "";
+		if (typeStr neq "") {
+			typeAttr = " cfsqltype=""#typeStr#""";
+		}
+		return typeAttr;
+	}
+	
+	function buildCfqueryparam(theParam, typeAttr) {
+		return "<cfqueryparam value=""#theParam#""#typeAttr#>";
+	}
+	
+	function buildNewParamForDisplay(theParam, newParam) {
+		return buildCfqueryparamForDisplay(newParam, theParam, buildTypeAttr(theParam));
+	}
+	
+	function buildCfqueryparamForDisplay(newParam, theParam, typeAttr) {
+		return newParam & "</strike><b>&lt;cfqueryparam value=""#theParam#""#typeAttr#></b>";
+	}	
+	
+	function rewriteQuery(SQL, pattern) {
+		var theParam = "";
+		var newParam = "";
+		var prefix = "";
+		var startIdx = 1;		
+		var st = reFind(pattern,SQL,startIdx,true);
+		while (st.pos[1]) {
+			prefix = mid(SQL, startIdx, st.pos[1] - startIdx);
+			theParam = mid(SQL, st.pos[2], st.len[2]);
+			if (left(theParam,1) IS "'") {
+				theParam=mid(theParam,2,len(theParam)-2);
+			}
+			if (prefix does not contain "&lt;cf") {
+				SQL=removechars(SQL,st.pos[2],st.len[2]);
+				newParam = buildNewParam(theParam);
+				SQL=insert(newParam,SQL,st.pos[2]-1);
+				startIdx = st.pos[1]+len(newParam);
+			} else {
+				startIdx = st.pos[2] + st.len[2];
+			}
+			st = reFind(pattern, SQL, startIdx, true);
+		}
+		return SQL;
+	}
+	
+	function rewriteQueryForDisplay(SQL, pattern) {
+		var theParam = "";
+		var newParam = "";
+		var data = structNew();
+		var Fixable=false;
+		var prefix = "";
+		var startIdx = 1;
+		var st = reFind(pattern,SQL,startIdx,true);
+		while (st.pos[1]) {
+			prefix = mid(SQL, startIdx, st.pos[1] - startIdx);
+			theParam = mid(SQL, st.pos[2], st.len[2]);
+			if (left(theParam,1) IS "'") {
+				theParam=mid(theParam,2,len(theParam)-2);						
+			}
+			if (prefix does not contain "&lt;cf") {
+				Fixable=true;
+				newParam = "<strike>" & theParam;
+				newParam = buildNewParamForDisplay(theParam, newParam);
+				SQL=removechars(SQL,st.pos[2],st.len[2]);
+				SQL=insert(newParam,SQL,st.pos[2]-1);
+				startIdx = st.pos[1]+len(newParam);
+			} else {
+				startIdx = st.pos[2] + st.len[2];
+			}
+			st = reFind(pattern,SQL,startIdx,true);
+		}
+		data.Fixable= Fixable;
+		data.SQL = SQL;
+		return data;
+	}
+	
+	function getPattern(queryType) {
+		var pattern = "";
+		if (queryType is "insert") {
+			pattern = "([']?##[^##]+##[']?)";	
+		} else {
+			pattern = "=[[:space:]]*([']?##[^##]+##[']?)";	
+		}
+		return pattern;
+	}
+</cfscript>
+
+<cffunction name="dump">
+	<cfargument name="var_name">
+	<cfdump var="#var_name#">
+</cffunction>
 
 <!--- set to True to work on directories recursively --->
 <CFSET beRecursive=true>
@@ -64,10 +171,10 @@ Legal:
 <CFSET CurDir="#GetDirectoryFromPath(CGI.Path_Translated)#">
 </CFIF>
 
-<CFDIRECTORY Action="List" 
-	Directory="#CurDir#" 
-	Name="Dir" 
-	Filter="*.cfm">
+<cfdirectory action="List" 
+	Directory="#CurDir#"
+	name="dir" 
+	filter="*.cfm|*.cfc|*.cfml">
 
 <FORM Action="_parameterizeQueries.cfm" Method="POST">
 <CFPARAM Name="ffFixMe" default="">
@@ -121,41 +228,7 @@ Legal:
 			<CFIF listFind(ffFixMe,SQLHash)>
 				<!--- actually fix the sql --->
 				<cfset rewrite=true>
-				<CFIF SQL does not contain "CFQUERYPARAM">
-					<cfif queryType is "insert">
-						<CFSET st = reFind("([']?##[^##]+##[']?)",SQL,1,true)>
-						<CFLOOP Condition="#st.pos[1]#">
-							<CFSET theParam = mid(SQL, st.pos[2], st.len[2])>
-							<CFIF left(theParam,1) IS "'">
-								<CFSET theParam=mid(theParam,2,len(theParam)-2)>
-							</CFIF>
-							<CFSET SQL=removechars(SQL,st.pos[2],st.len[2])>
-							<cfif theParam contains "now()" or theParam contains "date">
-								<cfset newParam = "<CFQUERYPARAM Value=""#theParam#"" cfsqltype=""CF_SQL_TIMESTAMP"">">
-							<cfelse>
-								<cfset newParam = "<CFQUERYPARAM Value=""#theParam#"">">
-							</cfif>
-							<CFSET SQL=insert(newParam,SQL,st.pos[2]-1)>
-							<CFSET st = reFind("([']?##[^##]+##[']?)", SQL, st.pos[1]+len(newParam), true)>
-						</CFLOOP>
-					<cfelse>
-						<CFSET st = reFind("=[[:space:]]*([']?##[^##]+##[']?)",SQL,1,true)>
-						<CFLOOP Condition="#st.pos[1]#">
-							<CFSET theParam = mid(SQL, st.pos[2], st.len[2])>
-							<CFIF left(theParam,1) IS "'">
-								<CFSET theParam=mid(theParam,2,len(theParam)-2)>
-							</CFIF>
-							<cfif theParam contains "now()" or theParam contains "date">
-								<cfset newParam = "<CFQUERYPARAM Value=""#theParam#"" cfsqltype=""CF_SQL_TIMESTAMP"">">
-							<cfelse>
-								<cfset newParam = "<CFQUERYPARAM Value=""#theParam#"">">
-							</cfif>
-							<CFSET SQL=removechars(SQL,st.pos[2],st.len[2])>
-							<CFSET SQL=insert(newParam, SQL, st.pos[2]-1)>
-							<CFSET st = reFind("\=[[:space:]]*([']?##[^##]+##[']?)", SQL, st.pos[1]+len(newParam), true)>
-						</CFLOOP>
-					</cfif>
-				</CFIF>
+				<CFSET SQL=rewriteQuery(SQL, getPattern(queryType))>;
 				<CFOUTPUT>
 				<strong>Parameterized!</strong><br>
 				<pre>#htmlcodeformat(StartTag & SQL)#</pre>
@@ -166,48 +239,11 @@ Legal:
 			<CFELSE>
 				<CFSET SQL = htmlCodeFormat(SQL)>
 				<CFSET SQL = htmlCodeFormat(mid(TheFile, EndOfTagPos+1, endTagPos-EndOfTagPos-1))>
-				<CFSET Fixable=false>
-				<CFIF SQL does not contain "CFQUERYPARAM">
-					<cfif queryType is "insert">
-						<CFSET st = reFind("([']?##[^##]+##[']?)",SQL,1,true)>
-						<CFLOOP Condition="#st.pos[1]#">
-							<CFSET Fixable=true>
-							<CFSET theParam = mid(SQL, st.pos[2], st.len[2])>
-							<cfset newParam = "<strike>" & theParam>
-							<CFIF left(theParam,1) IS "'">
-								<CFSET theParam=mid(theParam,2,len(theParam)-2)>
-							</CFIF>
-							<cfif theParam contains "now()" or theParam contains "date">
-								<cfset newParam = newParam & "</strike><b>&lt;CFQUERYPARAM Value=""#theParam#"" cfsqltype=""CF_SQL_TIMESTAMP""></b>">
-							<cfelse>
-								<cfset newParam = newParam & "</strike><b>&lt;CFQUERYPARAM Value=""#theParam#""></b>">
-							</cfif>
-							<CFSET SQL=removechars(SQL,st.pos[2],st.len[2])>
-							<CFSET SQL=insert(newParam,SQL,st.pos[2]-1)>
-							<CFSET st = reFind("([']?##[^##]+##[']?)",SQL,st.pos[1]+len(newParam),true)>
-						</CFLOOP>
-					<cfelse>
-						<CFSET st = reFind("=[[:space:]]*([']?##[^##]+##[']?)",SQL,1,true)>
-						<CFLOOP Condition="#st.pos[1]#">
-							<CFSET Fixable=true>
-							<CFSET theParam = mid(SQL, st.pos[2], st.len[2])>
-							<cfset newParam = "<strike>" & theParam>
-							<CFIF left(theParam,1) IS "'">
-								<CFSET theParam=mid(theParam,2,len(theParam)-2)>
-							</CFIF>
-							<cfif theParam contains "now()" or theParam contains "date">
-								<cfset newParam = newParam & "</strike><b>&lt;CFQUERYPARAM Value=""#theParam#"" cfsqltype=""CF_SQL_TIMESTAMP""></b>">
-							<cfelse>
-								<cfset newParam = newParam & "</strike><b>&lt;CFQUERYPARAM Value=""#theParam#""></b>">
-							</cfif>
-							<CFSET SQL=removechars(SQL,st.pos[2],st.len[2])>
-							<CFSET SQL=insert(newParam, SQL, st.pos[2]-1)>
-							<CFSET st = reFind("\=[[:space:]]*([']?##[^##]+##[']?)",SQL,st.pos[1]+st.len[1]+50+len(theParam),true)>
-						</CFLOOP>
-					</cfif>
-				</CFIF>
+				<CFSET data = rewriteQueryForDisplay(SQL, getPattern(queryType))>
+				<CFSET Fixable=data.Fixable>
+				<CFSET SQL=data.SQL>
 				<CFOUTPUT>
-				<CFIF Fixable><INPUT Type="Checkbox" Name="ffFixMe" Value="#SQLHash#" <cfif isDefaultChecked>CHECKED</cfif>>Parameterize Me:<br></CFIF>
+				<CFIF Fixable><INPUT Type="Checkbox" Name="ffFixMe" value="#SQLHash#" <cfif isDefaultChecked>CHECKED</cfif>>Parameterize Me:<br></CFIF>
 				<pre>#htmlcodeformat(StartTag)##SQL#</pre>
 				</CFOUTPUT>
 				<CFSET curpos = endTagPos>
@@ -218,11 +254,13 @@ Legal:
 	</CFLOOP>
 	<CFIF ReWrite>
 		<cfif overwriteInPlace>
+<!---			
 	   		<CFFILE Action="Write" 
 				File="#CurDir#\#Dir.Name#.old"
 			    OUTPUT="#TheOriginalFile#"
 			    ADDNEWLINE="No"
 			>
+--->			
 	   		<CFFILE Action="Write" 
 				File="#CurDir#\#Dir.Name#"
 			    OUTPUT="#TheFile#"
@@ -290,7 +328,7 @@ Legal:
 		<TD bgColor="eeeeee" Align="Right"><font face="arial">#numberFormat(TotalLines)#</font></TD>
 	</TR>
 	</TABLE>
-	<INPUT Type="Submit" Value="Parameterize Selected">
+	<INPUT Type="Submit" value="Parameterize Selected">
 	</FORM>
 	</body>
 	</html>
